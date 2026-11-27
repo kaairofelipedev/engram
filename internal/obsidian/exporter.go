@@ -1,6 +1,8 @@
 package obsidian
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -69,6 +71,41 @@ func sanitizePathComponent(s string) string {
 		clean = "_"
 	}
 	return clean
+}
+
+// sessionHubFileName is the path of a session hub relative to _sessions.
+// Nested IDs stay nested. A Windows-forbidden character in any segment, such
+// as the ":" in a resume ID, is rejected by os.OpenRoot as a path escape.
+// Those hubs use a stable SHA-256 of the raw session ID. The ID inside the
+// note is unchanged.
+func sessionHubFileName(sessionID string) string {
+	if sessionHubNeedsDigestName(sessionID) {
+		sum := sha256.Sum256([]byte(sessionID))
+		return "~engram-session-" + hex.EncodeToString(sum[:]) + ".md"
+	}
+	return sessionID + ".md"
+}
+
+func sessionHubNeedsDigestName(sessionID string) bool {
+	for _, segment := range strings.FieldsFunc(sessionID, isSessionHubSeparator) {
+		if segmentHasWindowsUnsafeName(segment) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSessionHubSeparator(r rune) bool {
+	return r == '/' || r == '\\'
+}
+
+func segmentHasWindowsUnsafeName(segment string) bool {
+	for _, r := range segment {
+		if r < 0x20 || strings.ContainsRune(`<>:"|?*`, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetGraphConfig sets the GraphConfig mode on this exporter's config.
@@ -459,7 +496,8 @@ func (e *Exporter) Export() (*ExportResult, error) {
 		if len(refs) == 0 {
 			continue
 		}
-		hubPath := filepath.Join(sessionsDir, sessionID+".md")
+		name := sessionHubFileName(sessionID)
+		hubPath := filepath.Join(sessionsDir, name)
 		cleanSessionsDir := filepath.Clean(sessionsDir)
 		cleanHubPath := filepath.Clean(hubPath)
 		if !strings.HasPrefix(cleanHubPath, cleanSessionsDir+string(filepath.Separator)) {
@@ -467,11 +505,11 @@ func (e *Exporter) Export() (*ExportResult, error) {
 			continue
 		}
 		content := SessionHubMarkdown(sessionID, refs)
-		if err := writeSessionHub(sessionsDir, sessionID+".md", content); err != nil {
+		if err := writeSessionHub(sessionsDir, name, content); err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("write session hub %s: %w", hubPath, err))
 			continue
 		}
-		state.SessionHubs[sessionID] = filepath.Join("_sessions", sessionID+".md")
+		state.SessionHubs[sessionID] = filepath.Join("_sessions", name)
 		result.HubsCreated++
 	}
 

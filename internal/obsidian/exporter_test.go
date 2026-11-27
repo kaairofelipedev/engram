@@ -1,6 +1,8 @@
 package obsidian
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -1121,6 +1123,78 @@ func TestExportSessionHubsCreateNestedDirectories(t *testing.T) {
 				t.Fatalf("state.SessionHubs[%q] = %q, want %q", sessionID, got, want)
 			}
 		})
+	}
+}
+
+func TestSessionHubFileNameKeepsNestedIDsAndHashesWindowsUnsafeIDs(t *testing.T) {
+	nested := "sdd/change-2026-09-10/summary"
+	if got, want := sessionHubFileName(nested), nested+".md"; got != want {
+		t.Fatalf("sessionHubFileName(%q) = %q, want %q", nested, got, want)
+	}
+
+	sessionID := "abc:resume:3"
+	sum := sha256.Sum256([]byte(sessionID))
+	want := "~engram-session-" + hex.EncodeToString(sum[:]) + ".md"
+	if got := sessionHubFileName(sessionID); got != want {
+		t.Fatalf("sessionHubFileName(%q) = %q, want %q", sessionID, got, want)
+	}
+
+	// Digest locked to hubs already written by engram 3.7.2+codex.hubs.1.
+	productionID := "69c979d8-7897-451b-aedf-be475319b9b1:resume:3"
+	const productionName = "~engram-session-f1a29780ab555d7f1b531e32d8461eb07e2160e4eb10d29c1878168164d04d21.md"
+	if got := sessionHubFileName(productionID); got != productionName {
+		t.Fatalf("sessionHubFileName(%q) = %q, want %q", productionID, got, productionName)
+	}
+}
+
+func TestExportSessionHubWithColonUsesDigestFile(t *testing.T) {
+	vault := t.TempDir()
+	sessionID := "abc:resume:3"
+	ms := &mockStore{
+		exportData: &store.ExportData{
+			Sessions: []store.Session{{ID: sessionID, Project: "engram"}},
+			Observations: []store.Observation{{
+				ID:        1,
+				SessionID: sessionID,
+				Type:      "bugfix",
+				Title:     "Colon session hub",
+				Content:   "content",
+				Scope:     "project",
+				CreatedAt: "2026-09-10T00:00:00Z",
+				UpdatedAt: "2026-09-10T00:00:00Z",
+				Project:   strPtr("engram"),
+			}},
+		},
+	}
+
+	result, err := NewExporter(ms, ExportConfig{VaultPath: vault, GraphConfig: GraphConfigSkip}).Export()
+	if err != nil {
+		t.Fatalf("Export() error: %v", err)
+	}
+	if result.Created != 1 || result.HubsCreated != 1 || len(result.Errors) != 0 {
+		t.Fatalf("result = %+v, want one observation and one hub without errors", result)
+	}
+
+	name := sessionHubFileName(sessionID)
+	hubPath := filepath.Join(vault, "engram", "_sessions", name)
+	body, err := os.ReadFile(hubPath)
+	if err != nil {
+		t.Fatalf("digest session hub %q: %v", hubPath, err)
+	}
+	if !strings.Contains(string(body), "session_id: "+sessionID) {
+		t.Fatalf("hub note lost the raw session id %q:\n%s", sessionID, body)
+	}
+	rawPath := filepath.Join(vault, "engram", "_sessions", sessionID+".md")
+	if _, err := os.Stat(rawPath); err == nil {
+		t.Fatalf("raw colon hub %q was written", rawPath)
+	}
+
+	state, err := ReadState(filepath.Join(vault, "engram", ".engram-sync-state.json"))
+	if err != nil {
+		t.Fatalf("ReadState: %v", err)
+	}
+	if got, want := state.SessionHubs[sessionID], filepath.Join("_sessions", name); got != want {
+		t.Fatalf("state.SessionHubs[%q] = %q, want %q", sessionID, got, want)
 	}
 }
 
